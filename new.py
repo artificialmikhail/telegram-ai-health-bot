@@ -16,10 +16,11 @@ import asyncio
 import tiktoken
 import tempfile
 from dotenv import load_dotenv
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 
 # Configure logging
-#logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 TOTAL_TOKENS_LIMIT = 15000
 total_tokens_spent = 0
@@ -39,6 +40,7 @@ client = OpenAI(
 def count_tokens(text, model):
     encoding = tiktoken.encoding_for_model(model)
     return len(encoding.encode(text))
+    
 
 # Define a function to extract text from a PDF
 def extract_text_from_pdf(pdf_file):
@@ -57,6 +59,7 @@ def extract_text_from_image(image_file):
     return text
 
 # Define a function to create embeddings using OpenAI's model
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(4))
 def create_embeddings(text):
     logging.info("Creating embeddings for text")
     num_tokens = count_tokens(text, "text-embedding-ada-002")
@@ -64,7 +67,7 @@ def create_embeddings(text):
     total_tokens_spent += num_tokens
     if total_tokens_spent >= TOTAL_TOKENS_LIMIT:
         logging.error("Token limit reached")
-        raise ValueError("Token limit reached. Please enter /start to reset the limit.")
+        raise ValueError("Достигнут лимит токенов. Пожалуйста нажмите /start для восстановления лимита.")
     logging.info(f"Number of tokens used for embeddings (text-embedding-ada-002): {num_tokens}")
     response = client.embeddings.create(
         input=[text],
@@ -80,6 +83,7 @@ def find_relevant_context(query_embedding, context_embeddings):
     return best_idx, similarities[best_idx]
 
 # Define a function to handle queries
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(4))
 def answer_question(context, query):
     logging.info("Answering user question")
     query_embedding = create_embeddings(query)
@@ -134,6 +138,7 @@ async def start(update, context: CallbackContext):
     await update.message.reply_text('Привет! Меня зовут Дарья, я ИИ ассистент, созданный для помощи по вопросам здорового образа жизни и медицины! Ты можешь задать интересующий тебя вопрос по медицине или по своим анализам', reply_markup=reply_markup)
 
 # Function to handle file uploads (PDF, JPEG, PNG, JPG)
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(4))
 async def handle_file(update, context: CallbackContext):
     logging.info(f"Received a file: {update.message.document.file_name if update.message.document else 'photo'}")
     logging.info("Handling file upload")
@@ -167,6 +172,7 @@ async def handle_file(update, context: CallbackContext):
         await update.message.reply_text(str(e))
 
 # Function to handle user text queries
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(4))
 async def handle_query(update, context: CallbackContext):
     logging.info("Handling user text query")
     query = update.message.text
@@ -249,4 +255,7 @@ def main():
 
 if __name__ == '__main__':
     logging.info("Bot is running")
-    main()
+    try:
+        main()
+    except Exception as e:
+        logging.error(f"Main error: {e}")
