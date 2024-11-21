@@ -35,6 +35,13 @@ client = OpenAI(
      api_key=key,
 )
 
+async def error_handler(update, context):
+    logging.error(f"Exception while handling update: {context.error}")
+    try:
+        # Перезапуск функции обработки в случае ошибки
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Произошла ошибка, попробуйте позже.")
+    except Exception as e:
+        logging.error(f"Failed to send error message: {e}")
 
 # Tokenizer functions for counting tokens
 def count_tokens(text, model):
@@ -250,6 +257,7 @@ def main():
     application.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     application.add_handler(MessageHandler(filters.PHOTO, handle_file))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query))
+    application.add_error_handler(error_handler)
 
     application.run_polling()
 
