@@ -7,11 +7,11 @@ import numpy as np
 from openai import OpenAI
 import logging
 import telegram
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler
+from telegram import ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler
 from telegram.ext import filters
 from sklearn.metrics.pairwise import cosine_similarity
-from telegram.ext import CallbackContext, ConversationHandler
+from telegram.ext import CallbackContext
 import asyncio
 import tiktoken
 import tempfile
@@ -138,7 +138,6 @@ async def start(update, context: CallbackContext):
     global total_tokens_spent
     total_tokens_spent = 0  # Reset the token count
     keyboard = [
-        [InlineKeyboardButton("Сделать резюме", callback_data='summarize')],
         [KeyboardButton("Мои токены")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -198,16 +197,37 @@ async def handle_query(update, context: CallbackContext):
             raise ValueError("Token limit reached. Please enter /start to reset the limit.")
         
         if context_storage:
+            # Generate embeddings for the query
             query_embedding = create_embeddings(query)
-            best_idx, similarity = find_relevant_context(query_embedding, context_embeddings_storage)
-            if similarity > 0.6:
-                answer = answer_question([context_storage[best_idx]], query)
+
+            # Find similarities with all context embeddings
+            similarities = cosine_similarity([query_embedding], context_embeddings_storage)[0]
+
+            # Select indices of top 3 most similar contexts (or adjust the number as needed)
+            top_indices = similarities.argsort()[-3:][::-1]  # Get top 3 indices with highest similarity
+
+            # Constructing the context from the selected top contexts
+            relevant_contexts = [context_storage[idx] for idx in top_indices if similarities[idx] > 0.4]  # Adjust threshold as needed
+            if relevant_contexts:
+                combined_context = " ".join(relevant_contexts)
             else:
-                answer = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "user", "content": query}],
-                    max_tokens=700
-                ).choices[0].message.content.strip()
+                combined_context = ""
+
+            # Формируем сообщение для модели на основе найденных контекстов
+            messages = [
+                {"role": "system", "content": "Тебя зовут Дарья, ты ИИ ассистент, созданный для помощи по вопросам здорового образа жизни и медицины."},
+                {"role": "user", "content": query}
+            ]
+
+            if combined_context:
+                messages.insert(1, {"role": "system", "content": f"Context: {combined_context}"})
+
+            # Use the model to generate an answer
+            answer = client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages,
+                max_tokens=700
+            ).choices[0].message.content.strip()
         else:
             # No files available, just use the model to answer the question
             answer = client.chat.completions.create(
@@ -215,37 +235,12 @@ async def handle_query(update, context: CallbackContext):
                 messages=[{"role": "user", "content": query}],
                 max_tokens=700
             ).choices[0].message.content.strip()
+
         await update.message.reply_text(answer)
     except ValueError as e:
         logging.error(f"Error while handling query: {e}")
         await update.message.reply_text(str(e))
 
-# Function to summarize all uploaded files
-async def summarize(update, context: CallbackContext):
-    logging.info("Handling summarize request")
-    if context_storage:
-        combined_text = "\n".join(context_storage)
-        try:
-            summary = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": "Пожалуйста, сделайте краткое резюме следующего текста: " + combined_text}],
-                max_tokens=700
-            ).choices[0].message.content.strip()
-            await update.callback_query.message.reply_text(summary)
-        except ValueError as e:
-            logging.error(f"Error while summarizing: {e}")
-            await update.callback_query.message.reply_text(str(e))
-    else:
-        logging.warning("No documents available for summarization")
-        await update.callback_query.message.reply_text('Нет загруженных документов для создания резюме.')
-
-# Function to handle button clicks
-async def button(update, context: CallbackContext):
-    logging.info("Handling button click")
-    query = update.callback_query
-    await query.answer()
-    if query.data == 'summarize':
-        await summarize(update, context)
 
 # Main function to set up the bot
 def main():
@@ -253,7 +248,6 @@ def main():
     application = ApplicationBuilder().token(telegram_key).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     application.add_handler(MessageHandler(filters.PHOTO, handle_file))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query))
